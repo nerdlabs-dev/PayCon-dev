@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include <QStyle>
 #include <QClipboard>
 
 SignVerifyMessageDialog::SignVerifyMessageDialog(QWidget *parent) :
