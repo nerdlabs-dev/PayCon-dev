@@ -12,7 +12,7 @@ ARCH:=$(system lscpu | head -n 1 | awk '{print $2}')
 
 DEFS=-DBOOST_SPIRIT_THREADSAFE
 
-DEFS += $(addprefix -I,$(CURDIR) $(CURDIR)/obj $(CURDIR)/tor $(CURDIR)/json $(BOOST_INCLUDE_PATH) $(BDB_INCLUDE_PATH) $(OPENSSL_INCLUDE_PATH))
+DEFS += $(addprefix -I,$(CURDIR) $(CURDIR)/obj $(CURDIR)/json $(BOOST_INCLUDE_PATH) $(BDB_INCLUDE_PATH) $(OPENSSL_INCLUDE_PATH))
 LIBS = $(addprefix -L,$(BOOST_LIB_PATH) $(BDB_LIB_PATH) $(OPENSSL_LIB_PATH))
 
 LMODE = dynamic
@@ -34,7 +34,6 @@ LIBS += \
    -l db_cxx$(BDB_LIB_SUFFIX) \
    -l ssl \
    -l crypto \
-   -l event \
    -l rt
 
 ifndef USE_UPNP
@@ -108,81 +107,6 @@ xCXXFLAGS=-O2 $(EXT_OPTIONS) -pthread -Wall -Wextra -Wno-ignored-qualifiers -Wfo
 xLDFLAGS=$(LDHARDENING) $(LDFLAGS)
 
 OBJS= \
-    tor/address.o \
-    tor/addressmap.o \
-    tor/aes.o \
-    tor/anonymize.o \
-    tor/backtrace.o \
-    tor/buffers.o \
-    tor/channel.o \
-    tor/channeltls.o \
-    tor/circpathbias.o \
-    tor/circuitbuild.o \
-    tor/circuitlist.o \
-    tor/circuitmux.o \
-    tor/circuitmux_ewma.o \
-    tor/circuitstats.o \
-    tor/circuituse.o \
-    tor/command.o \
-    tor/compat.o \
-    tor/compat_libevent.o \
-    tor/config.o \
-    tor/config_codedigest.o \
-    tor/confparse.o \
-    tor/connection.o \
-    tor/connection_edge.o \
-    tor/connection_or.o \
-    tor/container.o \
-    tor/control.o \
-    tor/cpuworker.o \
-    tor/crypto.o \
-    tor/crypto_curve25519.o \
-    tor/crypto_format.o \
-    tor/curve25519-donna.o \
-    tor/di_ops.o \
-    tor/directory.o \
-    tor/dirserv.o \
-    tor/dirvote.o \
-    tor/dns.o \
-    tor/dnsserv.o \
-    tor/entrynodes.o \
-    tor/ext_orport.o \
-    tor/fp_pair.o \
-    tor/geoip.o \
-    tor/hibernate.o \
-    tor/log.o \
-    tor/memarea.o \
-    tor/mempool.o \
-    tor/microdesc.o \
-    tor/networkstatus.o \
-    tor/nodelist.o \
-    tor/onion.o \
-    tor/onion_fast.o \
-    tor/onion_main.o \
-    tor/onion_ntor.o \
-    tor/onion_tap.o \
-    tor/policies.o \
-    tor/procmon.o \
-    tor/reasons.o \
-    tor/relay.o \
-    tor/rendclient.o \
-    tor/rendcommon.o \
-    tor/rendmid.o \
-    tor/rendservice.o \
-    tor/rephist.o \
-    tor/replaycache.o \
-    tor/router.o \
-    tor/routerlist.o \
-    tor/routerparse.o \
-    tor/routerset.o \
-    tor/sandbox.o \
-    tor/statefile.o \
-    tor/status.o \
-    tor/torgzip.o \
-    tor/tortls.o \
-    tor/tor_util.o \
-    tor/transports.o \
-    tor/util_codedigest.o \
     obj/fugue.o \
     obj/hamsi.o \
     obj/groestl.o \
@@ -264,20 +188,6 @@ obj/%.o: %.cpp
 	      -e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
 	  rm -f $(@:%.o=%.d)
 
-tor/%.o: tor/%.c
-	$(CC) -c $(xCXXFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
-	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
-        sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
-                -e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
-        rm -f $(@:%.o=%.d)
-
-tor/%.o: tor/anonymize.cpp
-	$(CXX) -c $(xCXXFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
-	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
-        sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
-                -e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
-        rm -f $(@:%.o=%.d)
-		
 obj/%.o: %.c
 		$(CXX) -c $(xCXXFLAGS) -fpermissive -MMD -MF $(@:%.o=%.d) -o $@ $<
 		@cp $(@:%.o=%.d) $(@:%.o=%.P); \
@@ -292,8 +202,6 @@ clean:
 	-rm -f PayCond
 	-rm -f obj/*.o
 	-rm -f obj/*.P
-	-rm -f tor/*.o
-	-rm -f tor/*.P
 	-rm -f obj-test/*.o
 	-rm -f obj-test/*.P
 	-rm -f obj/build.h
