@@ -5,7 +5,8 @@
 # Starts the daemon on its own, with no network, in a throwaway data directory,
 # then over RPC: creates addresses, signs and verifies a message (OpenSSL key
 # code), exports and re-imports a private key, encrypts the wallet and signs
-# with it unlocked (wallet encryption code).
+# with it unlocked (wallet encryption code), then starts two nodes that
+# connect to each other over plain TCP.
 # Fails on the first thing that doesn't work.
 set -euo pipefail
 
@@ -84,5 +85,26 @@ cli walletpassphrase "smoke-passphrase" 30
 SIG2=$(cli signmessage "$ADDR" "after encryption" | tr -d '\r')
 check "sign with the decrypted key" test "$(cli verifymessage "$ADDR" "$SIG2" "after encryption" | tr -d '\r')" = "true"
 stop
+
+# --- plain TCP networking (PayCon used to talk only through its built-in Tor):
+# node A listens on 127.0.0.1 with the normal network setup, node B connects to it
+CUR="$DIR/netA"; conf "$CUR" ""
+sed -i.bak -e 's/^listen=0$/listen=1/' -e '/^connect=/d' "$CUR/PayCon.conf"
+printf 'bind=127.0.0.1\ndiscover=0\n' >> "$CUR/PayCon.conf"
+start "$CUR"; A="$CUR"
+APORT=$PORT
+RPCPORT=$((RPCPORT + 2)); PORT=$((PORT + 2))
+CUR="$DIR/netB"; conf "$CUR" ""
+sed -i.bak -e "s/^connect=.*/connect=127.0.0.1:$APORT/" "$CUR/PayCon.conf"
+start "$CUR"; B="$CUR"
+for i in $(seq 1 30); do
+    [ "$(cli getconnectioncount | tr -d '\r')" = "1" ] && break; sleep 1
+done
+check "a second node connects over plain TCP" test "$(cli getconnectioncount | tr -d '\r')" = "1"
+cli getpeerinfo | grep -E '"addr"|"subver"' || true
+CUR="$A"
+check "the listening node sees the inbound peer" test "$(cli getconnectioncount | tr -d '\r')" = "1"
+stop
+CUR="$B"; stop
 
 echo "all smoke tests passed"
