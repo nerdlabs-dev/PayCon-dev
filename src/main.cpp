@@ -15,6 +15,11 @@
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
+// Static Qt on Windows: link the platform plugin into the wallet (not the daemon)
+#if defined(WIN32) && defined(QT_GUI)
+#include <QtPlugin>
+Q_IMPORT_PLUGIN (QWindowsIntegrationPlugin);
+#endif
 
 
 using namespace std;

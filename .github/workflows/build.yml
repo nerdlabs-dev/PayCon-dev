@@ -1,0 +1,516 @@
+# Builds PayCon (CON) on GitHub's build machines:
+#   Linux    PayCond (daemon) and PayCon-qt (wallet)        Ubuntu 24.04, x86_64
+#   Windows  PayCond.exe and PayCon-qt.exe, self-contained  MSYS2 MinGW-w64, x86_64
+#   macOS    PayCond for Apple Silicon and Intel,
+#            PayCon.app (in a .dmg) for Apple Silicon      Homebrew + Berkeley DB built here
+# Each daemon is smoke-tested after it's built (contrib/ci/smoke-test.sh).
+# Builds use make -k so a failing build reports all of its errors at once.
+#
+# Every push keeps the binaries as downloadable "artifacts" on the run's page.
+# Pushing a version tag (e.g. v2.3.0.0) also publishes them as a GitHub release.
+
+name: Build
+
+# Documentation-only changes don't need new binaries (tag pushes always build)
+on:
+  push:
+    branches: [ master, modern-linux-build ]
+    tags: [ 'v*' ]
+    paths-ignore: [ '**.md', 'doc/**', 'README', 'INSTALL', 'UPDATE-LOG' ]
+  pull_request:
+    paths-ignore: [ '**.md', 'doc/**', 'README', 'INSTALL', 'UPDATE-LOG' ]
+  workflow_dispatch:
+
+# A newer push to the same branch cancels a build that's still running;
+# release (tag) builds are never cancelled
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+# ccache keeps compiled objects between runs, so only changed files are
+# recompiled. Libraries built here (Berkeley DB, qrencode) are cached by
+# version; bump the "-v1" in their cache keys after changing how they're built.
+env:
+  CCACHE_COMPILERCHECK: content
+  CCACHE_MAXSIZE: 500M
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
+  HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: 1
+
+jobs:
+  linux-daemon:
+    name: Linux daemon
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev libdb++-dev \
+            libboost-system-dev libboost-filesystem-dev libboost-program-options-dev \
+            libboost-thread-dev libboost-chrono-dev libminiupnpc-dev zlib1g-dev ccache
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-linux-daemon-${{ github.sha }}
+          restore-keys: ccache-linux-daemon-
+
+      - name: Build PayCond
+        run: |
+          export CCACHE_DIR="$RUNNER_TEMP/ccache"
+          cd src
+          mkdir -p obj/zerocoin
+          # STATIC=1 links Boost, Berkeley DB, OpenSSL and miniupnpc statically
+          make -k -f makefile.unix -j"$(nproc)" USE_UPNP=1 STATIC=1 CXX="ccache g++" CC="ccache gcc"
+          strip PayCond
+          ccache -s
+
+      - name: Check the binary
+        run: |
+          file src/PayCond
+          ldd src/PayCond
+          if ldd src/PayCond | grep -E 'libboost|libdb_cxx|libdb-[0-9]|libssl|libcrypto\.|miniupnpc'; then
+            echo "PayCond should not need the shared libraries listed above"; exit 1
+          fi
+
+      - name: Smoke test
+        run: contrib/ci/smoke-test.sh src/PayCond
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PayCond-linux-x86_64
+          path: src/PayCond
+
+  linux-qt:
+    name: Linux wallet
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev libdb++-dev \
+            libboost-system-dev libboost-filesystem-dev libboost-program-options-dev \
+            libboost-thread-dev libboost-chrono-dev libminiupnpc-dev zlib1g-dev \
+            qtbase5-dev qttools5-dev-tools cmake ccache
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-linux-qt-${{ github.sha }}
+          restore-keys: ccache-linux-qt-
+
+      - uses: actions/cache@v4
+        id: qrcache
+        with:
+          path: ${{ runner.temp }}/qrencode
+          key: linux-qrencode-4.1.1-ubuntu24.04-v1
+
+      # Ubuntu's libqrencode-dev has no static library, so build one
+      - name: Build static libqrencode
+        if: steps.qrcache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch v4.1.1 https://github.com/fukuchi/libqrencode.git "$RUNNER_TEMP/libqrencode"
+          cmake -S "$RUNNER_TEMP/libqrencode" -B "$RUNNER_TEMP/qrbuild" \
+            -DBUILD_SHARED_LIBS=OFF -DWITH_TOOLS=NO -DWITH_TESTS=NO -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/qrencode"
+          cmake --build "$RUNNER_TEMP/qrbuild" -j"$(nproc)"
+          cmake --install "$RUNNER_TEMP/qrbuild"
+
+      - name: Build PayCon-qt
+        run: |
+          # RELEASE=1 links Boost, Berkeley DB, OpenSSL, miniupnpc, qrencode and
+          # zlib statically, so only Qt 5 and the C/C++ runtime come from the system
+          export CCACHE_DIR="$RUNNER_TEMP/ccache"
+          QMAKE=/usr/lib/qt5/bin/qmake
+          [ -x "$QMAKE" ] || QMAKE="qmake -qt=qt5"
+          $QMAKE RELEASE=1 USE_UPNP=1 USE_QRCODE=1 "CONFIG+=release" "CONFIG-=debug_and_release" \
+            "QMAKE_CC=ccache gcc" "QMAKE_CXX=ccache g++" "QMAKE_LINK=g++" \
+            "QRENCODE_INCLUDE_PATH=$RUNNER_TEMP/qrencode/include" "QRENCODE_LIB_PATH=$RUNNER_TEMP/qrencode/lib" \
+            paycon-qt.pro
+          make -k -j"$(nproc)"
+          strip PayCon-qt
+          ccache -s
+
+      - name: Check the binary
+        run: |
+          file PayCon-qt
+          ldd PayCon-qt
+          # (libdbus is D-Bus, used by Qt, not Berkeley DB)
+          if ldd PayCon-qt | grep -E 'libboost|libdb_cxx|libdb-[0-9]|libssl|libcrypto\.|miniupnpc|qrencode'; then
+            echo "PayCon-qt should not need the shared libraries listed above"; exit 1
+          fi
+
+      # Start the wallet without a screen (Qt's offscreen platform) and check
+      # it gets as far as loading the wallet and block index
+      - name: Start the wallet
+        run: |
+          D="$RUNNER_TEMP/qtdata"; mkdir -p "$D"
+          printf 'connect=127.0.0.1:1\nlisten=0\ndnsseed=0\nupnp=0\n' > "$D/PayCon.conf"
+          QT_QPA_PLATFORM=offscreen ./PayCon-qt -datadir="$D" -min > qt.log 2>&1 &
+          PID=$!
+          for i in $(seq 1 90); do
+            grep -q "Done loading" "$D/debug.log" 2>/dev/null && break
+            sleep 1
+          done
+          kill $PID 2>/dev/null || true
+          cat qt.log
+          tail -n 30 "$D/debug.log" || true
+          grep -q "Done loading" "$D/debug.log"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PayCon-qt-linux-x86_64
+          path: PayCon-qt
+
+  windows:
+    name: Windows daemon and wallet
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            make
+            git
+            diffutils
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-boost
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-miniupnpc
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-qt5-static
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ccache
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-windows-${{ github.sha }}
+          restore-keys: ccache-windows-
+
+      - uses: actions/cache@v4
+        id: depcache
+        with:
+          path: |
+            ${{ runner.temp }}/bdb-install
+            ${{ runner.temp }}/qrencode
+          key: windows-deps-bdb5.3.28-qrencode4.1.1-v1
+
+      # Berkeley DB 5.3 (Sleepycat license), the same version the Linux builds
+      # use. MSYS2 only ships 6.x, which is AGPL-licensed and a DLL.
+      - name: Build static Berkeley DB 5.3.28
+        if: steps.depcache.outputs.cache-hit != 'true'
+        run: |
+          T="$(cygpath -u "$RUNNER_TEMP")"
+          git clone --depth 1 --branch v5.3.28 https://github.com/berkeleydb/libdb.git "$T/bdb"
+          cd "$T/bdb"
+          # Rename a function that clashes with a GCC built-in
+          sed -i 's/__atomic_compare_exchange/__atomic_compare_exchange_db/g' src/dbinc/atomic.h
+          cd build_unix
+          # 2012-era C: build as C17 and relax GCC 14+'s stricter defaults
+          export CFLAGS="-O2 -std=gnu17 -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-implicit-function-declaration"
+          export CXXFLAGS="-O2"
+          ../dist/configure --host=x86_64-w64-mingw32 --build=x86_64-w64-mingw32 \
+            --enable-mingw --enable-cxx --disable-shared --disable-replication \
+            --prefix="$T/bdb-install"
+          make -j"$(nproc)" libdb.a libdb_cxx.a
+          make install_lib install_include
+          ls "$T/bdb-install/lib" "$T/bdb-install/include"
+
+      # MSYS2 only ships qrencode as a DLL; build a static copy so the wallet
+      # stays a single self-contained .exe
+      - name: Build static libqrencode
+        if: steps.depcache.outputs.cache-hit != 'true'
+        run: |
+          T="$(cygpath -u "$RUNNER_TEMP")"
+          git clone --depth 1 --branch v4.1.1 https://github.com/fukuchi/libqrencode.git "$T/libqrencode"
+          cmake -S "$T/libqrencode" -B "$T/qrbuild" -G "MSYS Makefiles" \
+            -DBUILD_SHARED_LIBS=OFF -DWITH_TOOLS=NO -DWITH_TESTS=NO -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$T/qrencode"
+          cmake --build "$T/qrbuild" -j"$(nproc)"
+          cmake --install "$T/qrbuild"
+          ls "$T/qrencode/lib"
+
+      - name: Build LevelDB
+        run: |
+          export CCACHE_DIR="$(cygpath -m "$RUNNER_TEMP/ccache")"
+          cd src/leveldb
+          make TARGET_OS=NATIVE_WINDOWS -j"$(nproc)" CC="ccache gcc" CXX="ccache g++" libleveldb.a libmemenv.a
+
+      - name: Build PayCond.exe
+        run: |
+          BDB="$(cygpath -u "$RUNNER_TEMP/bdb-install")"
+          export CCACHE_DIR="$(cygpath -m "$RUNNER_TEMP/ccache")"
+          cd src
+          mkdir -p obj/zerocoin
+          make -k -f makefile.mingw -j"$(nproc)" CC="ccache gcc" CXX="ccache g++" \
+            BDB_INCLUDE_PATH="$BDB/include" BDB_LIB_PATH="$BDB/lib"
+          strip PayCond.exe
+
+      - name: Build PayCon-qt.exe
+        run: |
+          QR="$(cygpath -m "$RUNNER_TEMP/qrencode")"
+          BDB="$(cygpath -m "$RUNNER_TEMP/bdb-install")"
+          export CCACHE_DIR="$(cygpath -m "$RUNNER_TEMP/ccache")"
+          # boost_system is header-only and newer Boost releases don't ship it
+          [ -f /mingw64/lib/libboost_system-mt.a ] || NOSYS="NO_BOOST_SYSTEM_LIB=1"
+          /mingw64/qt5-static/bin/qmake USE_UPNP=1 USE_QRCODE=1 $NOSYS "BOOST_LIB_SUFFIX=-mt" \
+            "CONFIG+=release" "CONFIG-=debug_and_release" \
+            "QMAKE_CC=ccache gcc" "QMAKE_CXX=ccache g++" "QMAKE_LINK=g++" \
+            "BDB_INCLUDE_PATH=$BDB/include" "BDB_LIB_PATH=$BDB/lib" \
+            "QRENCODE_INCLUDE_PATH=$QR/include" "QRENCODE_LIB_PATH=$QR/lib" paycon-qt.pro
+          make -k -j"$(nproc)"
+          strip PayCon-qt.exe
+          ccache -s
+
+      # The .exe files must run on their own: fail if they need any DLL that
+      # isn't part of Windows itself
+      - name: Check the binaries are self-contained
+        run: |
+          for f in src/PayCond.exe PayCon-qt.exe; do
+            file "$f"
+            ldd "$f"
+            if ldd "$f" | grep '=>' | grep -vi '/c/windows/'; then
+              echo "$f depends on non-system DLLs (listed above)"; exit 1
+            fi
+          done
+
+      - name: Smoke test
+        run: contrib/ci/smoke-test.sh src/PayCond.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PayCond-windows-x86_64
+          path: src/PayCond.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PayCon-qt-windows-x86_64
+          path: PayCon-qt.exe
+
+  macos:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Homebrew's Qt 5 is only prebuilt for Apple Silicon on current
+          # macOS, so the wallet app is built there; Intel gets the daemon
+          - runner: macos-15
+            arch: arm64
+            gui: true
+          - runner: macos-15-intel
+            arch: x86_64
+            gui: false
+    steps:
+      - uses: actions/checkout@v4
+
+      # Homebrew's libraries are built for this runner's macOS version, so
+      # that's the oldest macOS the binaries can claim to run on
+      - name: Set the minimum macOS version
+        run: echo "MACOSX_DEPLOYMENT_TARGET=$(sw_vers -productVersion | cut -d. -f1).0" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: |
+          brew install boost openssl@3 miniupnpc automake ccache
+          if [ "${{ matrix.gui }}" = "true" ]; then brew install qt@5 qrencode; fi
+
+      - uses: actions/cache@v4
+        id: bdbcache
+        with:
+          path: ${{ runner.temp }}/bdb
+          key: macos-${{ matrix.arch }}-bdb5.3.28-${{ env.MACOSX_DEPLOYMENT_TARGET }}-v5
+
+      # Homebrew's berkeley-db@5 has no static libraries, so build Berkeley DB
+      # 5.3 here (the same version as the other platforms)
+      - name: Build static Berkeley DB 5.3.28
+        if: steps.bdbcache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch v5.3.28 https://github.com/berkeleydb/libdb.git "$RUNNER_TEMP/bdbsrc"
+          cd "$RUNNER_TEMP/bdbsrc"
+          # Rename a function that clashes with a compiler built-in, and a macro
+          # that clashes with libc++'s <atomic>
+          sed -i '' 's/__atomic_compare_exchange/__atomic_compare_exchange_db/g' src/dbinc/atomic.h
+          grep -rl 'atomic_init(' src | xargs sed -i '' 's/atomic_init(/atomic_init_db(/g'
+          # Its 2013 config.guess/config.sub don't know Apple Silicon; use automake's
+          AM="$(ls -d "$(brew --prefix automake)"/share/automake-* | head -n 1)"
+          cp "$AM/config.guess" "$AM/config.sub" dist/
+          cd build_unix
+          # 2012-era C: build it as such (-std=gnu89) and relax Clang's newer
+          # errors; otherwise configure's own test programs fail to compile and
+          # it misdetects the platform. Leave the mutex type to configure: on
+          # macOS it avoids pthread mutexes and picks spin locks (Apple
+          # Silicon) or x86-64 assembly (Intel), as Homebrew's build does.
+          # Forcing pthread mutexes made opening the database fail.
+          CC=clang CXX=clang++ \
+          CFLAGS="-O2 -std=gnu89 -Wno-error=implicit-int -Wno-error=implicit-function-declaration -Wno-error=int-conversion -Wno-error=incompatible-function-pointer-types -Wno-error=incompatible-pointer-types" \
+          CXXFLAGS="-O2" \
+            ../dist/configure --enable-cxx --disable-shared --disable-replication --with-pic \
+            --prefix="$RUNNER_TEMP/bdb"
+          make -j"$(sysctl -n hw.ncpu)" libdb.a libdb_cxx.a
+          make install_lib install_include
+          ls "$RUNNER_TEMP/bdb/lib" "$RUNNER_TEMP/bdb/include"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-macos-${{ matrix.arch }}-${{ github.sha }}
+          restore-keys: ccache-macos-${{ matrix.arch }}-
+
+      - name: Build PayCond
+        run: |
+          export CCACHE_DIR="$RUNNER_TEMP/ccache"
+          cd src
+          mkdir -p obj/zerocoin
+          # STATIC=1 links Homebrew's static libraries, so the binary runs on
+          # Macs without Homebrew
+          make -k -f makefile.osx -j"$(sysctl -n hw.ncpu)" STATIC=1 CXX="ccache clang++" CC="ccache clang" \
+            BDB_PREFIX="$RUNNER_TEMP/bdb"
+          strip PayCond
+          ccache -s
+
+      - name: Check the binary
+        run: |
+          file src/PayCond
+          otool -L src/PayCond
+          if otool -L src/PayCond | tail -n +2 | grep -v -E '^\s+(/usr/lib/|/System/)'; then
+            echo "PayCond should only link libraries that ship with macOS"; exit 1
+          fi
+
+      - name: Smoke test
+        run: contrib/ci/smoke-test.sh src/PayCond
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PayCond-macos-${{ matrix.arch }}
+          path: src/PayCond
+
+      - name: Build PayCon.app
+        if: matrix.gui
+        run: |
+          export CCACHE_DIR="$RUNNER_TEMP/ccache"
+          QT="$(brew --prefix qt@5)"
+          # Link Boost, OpenSSL, miniupnpc and qrencode statically, so only Qt
+          # has to be bundled into the app (macdeployqt misses the libraries
+          # Homebrew's Boost loads from each other, and the app crashed at
+          # start). The linker prefers a .dylib over a .a in the same folder,
+          # so give it a folder with only the static libraries.
+          S="$RUNNER_TEMP/staticlibs"; mkdir -p "$S"
+          for f in boost openssl@3 miniupnpc qrencode; do
+            L="$(brew --prefix $f)/lib"
+            if ls "$L"/*.a > /dev/null 2>&1; then
+              ln -sf "$L"/*.a "$S"/
+            else
+              # no static library: use the shared one (a direct dependency,
+              # which macdeployqt bundles)
+              echo "$f has no static library, linking it dynamically"
+              ln -sf "$L"/*.dylib "$S"/
+            fi
+          done
+          ls "$S"
+          "$QT/bin/qmake" USE_UPNP=1 USE_QRCODE=1 "MACOS_MIN=$MACOSX_DEPLOYMENT_TARGET" "CONFIG+=release" "CONFIG-=debug_and_release" \
+            "QMAKE_CC=ccache clang" "QMAKE_CXX=ccache clang++" "QMAKE_LINK=clang++" \
+            "BOOST_LIB_PATH=$S" "OPENSSL_LIB_PATH=$S" "MINIUPNPC_LIB_PATH=$S" "QRENCODE_LIB_PATH=$S" \
+            "BDB_INCLUDE_PATH=$RUNNER_TEMP/bdb/include" "BDB_LIB_PATH=$RUNNER_TEMP/bdb/lib" paycon-qt.pro
+          make -k -j"$(sysctl -n hw.ncpu)"
+          ccache -s
+
+      # Copy Qt and the other libraries into the app, sign it ad hoc (Apple
+      # Silicon refuses to run unsigned code) and pack it in a disk image
+      - name: Package PayCon.app
+        if: matrix.gui
+        run: |
+          QT="$(brew --prefix qt@5)"
+          "$QT/bin/macdeployqt" PayCon.app -verbose=1
+          # Copy in the libraries macdeployqt misses, and sign the app
+          contrib/macdeploy/fix-bundle.sh PayCon.app
+          otool -L PayCon.app/Contents/MacOS/PayCon
+          if otool -L PayCon.app/Contents/MacOS/PayCon | tail -n +2 | grep -E 'boost|libssl|libcrypto|miniupnpc|libdb'; then
+            echo "PayCon should link these statically (listed above)"; exit 1
+          fi
+          # Every library in the app must only use system libraries or ones
+          # bundled in the app
+          BAD=0
+          while IFS= read -r f; do
+            # (skip the library's own install name, which otool -L also lists)
+            ID="$(otool -D "$f" | tail -n +2)"
+            if otool -L "$f" | tail -n +2 | grep -vF "${ID:-no-install-name}" | grep -E '/(opt|usr/local)/'; then echo "  ^ in $f"; BAD=1; fi
+          done < <(find PayCon.app -type f \( -name '*.dylib' -o -perm -u+x \) -exec sh -c 'file "$1" | grep -q Mach-O' _ {} \; -print)
+          [ "$BAD" = 0 ] || { echo "PayCon.app uses libraries outside the app (listed above)"; exit 1; }
+          hdiutil create -volname PayCon -srcfolder PayCon.app -ov -format UDZO PayCon-macos-arm64.dmg
+
+      # Start the packaged app (the runner has a desktop session; the app only
+      # bundles the native platform plugin) and check it loads
+      - name: Start the wallet
+        if: matrix.gui
+        run: |
+          D="$RUNNER_TEMP/qtdata"; mkdir -p "$D"
+          printf 'connect=127.0.0.1:1\nlisten=0\ndnsseed=0\nupnp=0\n' > "$D/PayCon.conf"
+          # QT_DEBUG_PLUGINS explains any failure to load Qt's plugins
+          QT_DEBUG_PLUGINS=1 PayCon.app/Contents/MacOS/PayCon -datadir="$D" -min > qt.log 2>&1 &
+          PID=$!
+          for i in $(seq 1 90); do
+            grep -q "Done loading" "$D/debug.log" 2>/dev/null && break
+            sleep 1
+          done
+          kill $PID 2>/dev/null || true
+          if ! grep -q "Done loading" "$D/debug.log" 2>/dev/null; then
+            cat qt.log
+            otool -L PayCon.app/Contents/PlugIns/platforms/libqcocoa.dylib
+            otool -l PayCon.app/Contents/PlugIns/platforms/libqcocoa.dylib | grep -A2 LC_RPATH || true
+            otool -L PayCon.app/Contents/MacOS/PayCon | grep -i qt
+            ls PayCon.app/Contents/Frameworks
+          fi
+          tail -n 30 "$D/debug.log" || true
+          grep -q "Done loading" "$D/debug.log"
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.gui
+        with:
+          name: PayCon-macos-arm64
+          path: PayCon-macos-arm64.dmg
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [ linux-daemon, linux-qt, windows, macos ]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Name the files for the release
+        run: |
+          mkdir release
+          cp artifacts/PayCond-linux-x86_64/PayCond            release/PayCond-linux-x86_64
+          cp artifacts/PayCon-qt-linux-x86_64/PayCon-qt      release/PayCon-qt-linux-x86_64
+          cp artifacts/PayCond-windows-x86_64/PayCond.exe      release/PayCond-windows-x86_64.exe
+          cp artifacts/PayCon-qt-windows-x86_64/PayCon-qt.exe release/PayCon-qt-windows-x86_64.exe
+          cp artifacts/PayCond-macos-arm64/PayCond             release/PayCond-macos-arm64
+          cp artifacts/PayCond-macos-x86_64/PayCond            release/PayCond-macos-x86_64
+          cp artifacts/PayCon-macos-arm64/PayCon-macos-arm64.dmg release/
+          chmod +x release/PayCond-* release/PayCon-qt-linux-x86_64
+          cd release && sha256sum * > SHA256SUMS && cat SHA256SUMS
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
