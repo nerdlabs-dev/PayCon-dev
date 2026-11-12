@@ -887,7 +887,7 @@ void ThreadSocketHandler2(void* parg)
 
                     if (nPos > ReceiveBufferSize()) {
                         if (!pnode->fDisconnect)
-                            printf("socket recv flood control disconnect (%"PRIszu" bytes)\n", vRecv.size());
+                            printf("socket recv flood control disconnect (%" PRIszu " bytes)\n", vRecv.size());
                         pnode->CloseSocketDisconnect();
                     }
                     else {
@@ -1042,7 +1042,13 @@ void ThreadMapPort2(void* parg)
     struct IGDdatas data;
     int r;
 
+#if MINIUPNPC_API_VERSION >= 18
+    /* miniupnpc 2.2.8+ also reports the WAN address */
+    char wanaddr[64];
+    r = UPNP_GetValidIGD(devlist, &urls, &data, lanaddr, sizeof(lanaddr), wanaddr, sizeof(wanaddr));
+#else
     r = UPNP_GetValidIGD(devlist, &urls, &data, lanaddr, sizeof(lanaddr));
+#endif
     if (r == 1)
     {
         if (fDiscover) {
@@ -1232,7 +1238,7 @@ void DumpAddresses()
     CAddrDB adb;
     adb.Write(addrman);
 
-    printf("Flushed %d addresses to peers.dat  %"PRId64"ms\n",
+    printf("Flushed %d addresses to peers.dat  %" PRId64 "ms\n",
            addrman.size(), GetTimeMillis() - nStart);
 }
 
