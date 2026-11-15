@@ -29,7 +29,7 @@ ok=1
 for i in $(seq 1 "$SECS"); do
   if ! kill -0 $PID 2>/dev/null; then ok=0; break; fi
   # under gdb the process stays alive while gdb prints the backtrace
-  grep -q "received signal\|exited with code\|exited normally" launch.log 2>/dev/null && { ok=0; break; }
+  grep -q "received signal\|^\[Inferior [0-9]* (process [0-9]*) exited" launch.log 2>/dev/null && { ok=0; break; }
   sleep 1
 done
 sleep 3
