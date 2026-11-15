@@ -50,7 +50,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libssl-dev libdb++-dev \
+          sudo apt-get install -y gdb build-essential libssl-dev libdb++-dev \
             libboost-system-dev libboost-filesystem-dev libboost-program-options-dev \
             libboost-thread-dev libboost-chrono-dev libminiupnpc-dev zlib1g-dev ccache
 
@@ -67,6 +67,7 @@ jobs:
           mkdir -p obj/zerocoin
           # STATIC=1 links Boost, Berkeley DB, OpenSSL and miniupnpc statically
           make -k -f makefile.unix -j"$(nproc)" USE_UPNP=1 STATIC=1 CXX="ccache g++" CC="ccache gcc"
+          cp PayCond PayCond.debug
           strip PayCond
           ccache -s
 
@@ -80,6 +81,9 @@ jobs:
 
       - name: Smoke test
         run: contrib/ci/smoke-test.sh src/PayCond
+
+      - name: First launch (no data folder, no PayCon.conf, default networking)
+        run: contrib/ci/first-launch.sh src/PayCond.debug 90
 
       - uses: actions/upload-artifact@v4
         with:
@@ -95,7 +99,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libssl-dev libdb++-dev \
+          sudo apt-get install -y gdb build-essential libssl-dev libdb++-dev \
             libboost-system-dev libboost-filesystem-dev libboost-program-options-dev \
             libboost-thread-dev libboost-chrono-dev libminiupnpc-dev zlib1g-dev \
             qtbase5-dev qttools5-dev-tools cmake ccache
@@ -136,6 +140,7 @@ jobs:
             "QRENCODE_INCLUDE_PATH=$RUNNER_TEMP/qrencode/include" "QRENCODE_LIB_PATH=$RUNNER_TEMP/qrencode/lib" \
             paycon-qt.pro
           make -k -j"$(nproc)"
+          cp PayCon-qt PayCon-qt.debug
           strip PayCon-qt
           ccache -s
 
@@ -164,6 +169,9 @@ jobs:
           cat qt.log
           tail -n 30 "$D/debug.log" || true
           grep -q "Done loading" "$D/debug.log"
+
+      - name: First launch of the wallet (no data folder, default networking)
+        run: QT_QPA_PLATFORM=offscreen contrib/ci/first-launch.sh ./PayCon-qt.debug 90
 
       - uses: actions/upload-artifact@v4
         with:
@@ -291,6 +299,11 @@ jobs:
 
       - name: Smoke test
         run: contrib/ci/smoke-test.sh src/PayCond.exe
+
+      - name: First launch (daemon and wallet, no data folder, default networking)
+        run: |
+          contrib/ci/first-launch.sh src/PayCond.exe 90
+          contrib/ci/first-launch.sh ./PayCon-qt.exe 90
 
       - uses: actions/upload-artifact@v4
         with:
