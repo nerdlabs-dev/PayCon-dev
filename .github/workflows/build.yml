@@ -83,7 +83,7 @@ jobs:
         run: contrib/ci/smoke-test.sh src/PayCond
 
       - name: First launch (no data folder, no PayCon.conf, default networking)
-        run: contrib/ci/first-launch.sh src/PayCond.debug 90
+        run: contrib/ci/first-launch.sh src/PayCond.debug 60 -rpcpassword=first-launch-test
 
       - uses: actions/upload-artifact@v4
         with:
@@ -203,6 +203,7 @@ jobs:
             mingw-w64-x86_64-qt5-static
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ccache
+            mingw-w64-x86_64-gdb
 
       - uses: actions/cache@v4
         with:
@@ -282,6 +283,7 @@ jobs:
             "BDB_INCLUDE_PATH=$BDB/include" "BDB_LIB_PATH=$BDB/lib" \
             "QRENCODE_INCLUDE_PATH=$QR/include" "QRENCODE_LIB_PATH=$QR/lib" paycon-qt.pro
           make -k -j"$(nproc)"
+          cp PayCon-qt.exe PayCon-qt.debug.exe
           strip PayCon-qt.exe
           ccache -s
 
@@ -302,8 +304,9 @@ jobs:
 
       - name: First launch (daemon and wallet, no data folder, default networking)
         run: |
-          contrib/ci/first-launch.sh src/PayCond.exe 90
-          contrib/ci/first-launch.sh ./PayCon-qt.exe 90
+          # the wallet first, while %APPDATA%\PayCon is still empty
+          contrib/ci/first-launch.sh ./PayCon-qt.debug.exe 90
+          contrib/ci/first-launch.sh src/PayCond.exe 60 -rpcpassword=first-launch-test
 
       - uses: actions/upload-artifact@v4
         with:

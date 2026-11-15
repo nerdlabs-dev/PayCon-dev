@@ -2,7 +2,7 @@
 # First-launch test: start a PayCon binary the way a new user would -- empty
 # home folder, no data directory, no PayCon.conf, default networking (DNS
 # seeds, UPnP, listening, external address lookup) -- and check it is still
-# running after a while. On Linux it runs under gdb so a crash prints a
+# running after a while. It runs under gdb when available so a crash prints a
 # backtrace.
 #
 #   contrib/ci/first-launch.sh <binary> [seconds] [extra args...]
@@ -18,7 +18,7 @@ LOGDIR="$H/.PayCon"; case "$(uname -s)" in
   MINGW*|MSYS*) LOGDIR="$(cygpath -u "$APPDATA_REAL")/PayCon";;
 esac
 echo "== first launch of $BIN (HOME=$H), watching for ${SECS}s"
-if command -v gdb >/dev/null && [ "$(uname -s)" = Linux ]; then
+if command -v gdb >/dev/null; then
   gdb -q -batch -ex "set pagination off" -ex "handle SIGPIPE nostop noprint pass" \
       -ex run -ex "thread apply all bt 25" --args "$BIN" "$@" > launch.log 2>&1 &
 else
